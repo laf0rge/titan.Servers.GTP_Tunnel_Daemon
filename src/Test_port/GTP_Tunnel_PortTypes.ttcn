@@ -1,0 +1,101 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (c) 2000-2018 Ericsson Telecom AB
+// All rights reserved. This program and the accompanying materials
+// are made available under the terms of the Eclipse Public License v2.0
+// which accompanies this distribution, and is available at
+// https://www.eclipse.org/org/documents/epl-2.0/EPL-2.0.html
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Rev:                <RnXnn>
+//  Prodnr:             CNL 113 827
+//  Contact:            http://ttcn.ericsson.se
+//
+///////////////////////////////////////////////////////////////////////////////
+module GTP_Tunnel_PortTypes{
+
+type enumerated GTP_Tunnel_Result_code { OK(0), ERROR(1)}
+
+type record GTP_Tunnel_Result{
+  GTP_Tunnel_Result_code  result_code,
+  charstring              result_text
+}
+
+type enumerated GTP_address_type {IPV4(0), IPV6(1)}
+
+type enumerated GTP_Set_address_mode{DO_NOT_SET(0), SET_AS_ANY(1), SET_ONE_BY_ONE(2)}
+
+type union GTP_Tunnel_param {
+  GTP_Set_address_mode   set_address_mode
+}
+
+type record of GTP_Tunnel_param GTP_Tunnel_param_list
+
+type record GTP_Tunnel_address{
+  charstring   local_ip,
+  integer      local_port,
+  charstring   remote_ip,
+  integer      remote_port
+}
+
+type enumerated GTP_Tunnel_proto{ NOT_SPECIFIED(0), UDP(17), TCP(6)}
+
+type record GTP_Tunnel_filter{
+  GTP_Tunnel_proto proto optional,
+  integer      local_port optional,
+  octetstring   remote_ip optional,
+  integer      remote_port optional
+}
+
+type record GTP_Tunnel_init{
+  charstring          interface_name optional,
+  GTP_Tunnel_address  tunnel_addres  optional,
+  GTP_Tunnel_param_list param_list optional
+}
+
+type record GTP_Tunnel_init_ack{
+  GTP_Tunnel_Result result
+}
+
+type record GTP_Tunnel_bye{
+}
+type record GTP_Tunnel_bye_ack{
+}
+
+type record GTP_Tunnel_create{
+  octetstring        outgoing_TEID,
+  octetstring        incoming_TEID optional,
+  GTP_address_type   user_address_type,
+  octetstring        user_address,
+  GTP_Tunnel_filter  filter optional,
+  GTP_Tunnel_address tunnel_addres  optional  // Just a placeholder for the future extension
+}
+
+type record GTP_Tunnel_create_ack{
+  octetstring        outgoing_TEID,
+  octetstring        incoming_TEID optional,
+  GTP_Tunnel_Result  result,
+  octetstring        user_address
+}
+
+type record GTP_Tunnel_destroy{
+  octetstring        user_address,
+  octetstring        outgoing_TEID,
+  octetstring        incoming_TEID
+}
+
+type record GTP_Tunnel_indication{
+  GTP_Tunnel_Result result
+}
+
+type port GTP_Tunnel_control_PT message{
+  out GTP_Tunnel_init;
+  in  GTP_Tunnel_init_ack;
+  out GTP_Tunnel_bye;
+  in  GTP_Tunnel_bye_ack;
+  out GTP_Tunnel_create;
+  in  GTP_Tunnel_create_ack;
+  out GTP_Tunnel_destroy;
+  in  GTP_Tunnel_indication;
+}
+
+}
