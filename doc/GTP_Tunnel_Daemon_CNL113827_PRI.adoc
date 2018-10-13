@@ -1,0 +1,120 @@
+---
+Author: Gábor Szalai
+Version: 109 21-CNL 113 827-1, Rev. C
+Date: 2018-01-24
+---
+= GTP Tunnel Daemon for TTCN-3 Toolset with TITAN, Product Revision Information
+:author: Gábor Szalai
+:revnumber: 109 21-CNL 113 827-1, Rev. C
+:revdate: 2018-01-24
+:toc:
+
+
+= Product Revision
+
+== Product
+
+|===
+|Old Product number:| CNL 113 827 | R1B
+|New Product number:| CNL 113 827 | R1C
+|===
+
+== Included Parts
+
+=== Source Code
+
+_src/Test_port_:
+
+[source]
+----
+GTP_Tunnel_PortTypes.ttcn
+GTP_Tunnel_control_PT.cc
+GTP_Tunnel_control_PT.hh
+GTP_mem_handler.h
+----
+
+_src/common_:
+
+[source]
+----
+GTP_ctrl_handler.c
+GTP_ctrl_handler.h
+----
+
+_src/daemon_:
+
+[source]
+----
+GTP_mem_handler.c
+GTP_mem_handler.h
+daemon.cc
+daemon.hh
+----
+
+=== Documentation
+
+==== *Function Description*
+
+[cols="50%,30%,20%",options="header",]
+|===
+|Document Name |Document Number | Revision
+|GTP Tunnel Daemon for TTCN-3 Toolset with TITAN,Function Description |1551-CNL 113 827 | A
+|===
+
+
+== Product Dependencies
+
+None.
+
+= Reason for Revision
+
+== Requirement Specification
+
+None.
+
+== Change Requests
+
+[cols="50%,50%",options="header",]
+|===
+| CR ID | Trouble Effect
+|===
+
+== Exemption Requests
+
+None.
+
+== Trouble Reports
+
+Trouble reports accepted until 2018-01-24.
+
+=== Implemented Trouble Reports
+
+[cols="50%,50%",options="header",]
+|===
+| TR ID | Trouble Effect
+|===
+
+=== Not Implemented Trouble Reports
+
+[cols="50%,50%",options="header",]
+|===
+| TR ID | Trouble Effect
+|===
+
+= Product Changes
+
+== R1A
+
+Initial release
+
+== R1B
+
+* The local endpoint of the GTP tunnel is closed if not needed any more.
+
+* The assigned IP address is removed if not needed any more.
+
+Correction triggering artifacts in openALM: link:https://openalm.lmera.ericsson.se/plugins/tracker/?aid=1444072[1444072] & link:https://openalm.lmera.ericsson.se/plugins/tracker/?aid=1461526[1461526].
+
+== R1C
+
+Corrected the removal of IPv6 address.
