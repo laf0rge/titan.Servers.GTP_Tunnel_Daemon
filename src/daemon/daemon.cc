@@ -38,7 +38,6 @@
 
 #define MAX_EVENTS_PER_THREAD 8
 
-int lastIdx = 0;
 char* tun_name=NULL;  // The interface name to use
 int pipefd[2]; // The internal pipe
 int address_set_mode=2;
@@ -53,7 +52,7 @@ struct sockaddr_storage default_rem_addr;
 // GTP Tunnel fds
 int tun_fd=-1;  // TUN device
 
-// read or write lock of the ip teid maps;
+// read or write lock of the ip teid maps (ip_idx_map + ip_teid_db)
 pthread_rwlock_t   ip_teid_lock;
 
 // ip teid maps
@@ -65,9 +64,17 @@ pthread_rwlock_t   ip_teid_lock;
 str_int_map ip_idx_map;
 
 // The IP database
-ip_entry_t*  ip_teid_db=NULL;
-int ip_teid_db_size=0;
-int ip_teid_db_entries=0;
+struct _ip_teid_db {
+	/* actual database */
+	ip_entry_t*	db;
+	/* size of the database (allocated size) */
+	int 		size;
+	/* number of entires in use */
+	int		entries;
+	/* last index we filled in; optimization to find unused entry */
+	int		last_idx;
+};
+static struct _ip_teid_db ip_teid_db;
 
 // map that holds the incoming teid - index map
 str_int_map teidin_idx_map;
@@ -387,8 +394,8 @@ int process_msg(msg_buffer* buffer, int fd){
           idx=it->second;
           // find the matching teid
 
-          for(int i=0;i<ip_teid_db[idx].teid_num;i++){
-            const filter_t* ft=&ip_teid_db[idx].teid_list[i].filter;
+          for(int i=0;i<ip_teid_db.db[idx].teid_num;i++){
+            const filter_t* ft=&ip_teid_db.db[idx].teid_list[i].filter;
             int match=0;
             if(ft->remote_ip.str_size!=-1){
               log("REMOTE IP:");
@@ -444,7 +451,7 @@ int process_msg(msg_buffer* buffer, int fd){
         if(match_idx!=-1){
           log("found the tunnel data");
           // found the tunnel data
-          int loc_gtp_tun_fd=ip_teid_db[idx].teid_list[match_idx].local_fd;
+          int loc_gtp_tun_fd=ip_teid_db.db[idx].teid_list[match_idx].local_fd;
 
           //find the address of the local GTP endpoint
           int ep_idx=-1;
@@ -457,10 +464,10 @@ int process_msg(msg_buffer* buffer, int fd){
           out_len+=put_int(&msg_buff,0);
 
           out_len+=put_int(&msg_buff,GTP_CTRL_IE_OUT_TEID);
-          out_len+=put_str(&msg_buff,&ip_teid_db[idx].teid_list[match_idx].teid_out);
+          out_len+=put_str(&msg_buff,&ip_teid_db.db[idx].teid_list[match_idx].teid_out);
 
 
-          const struct sockaddr_storage* ad=&ip_teid_db[idx].teid_list[match_idx].rem_addr;
+          const struct sockaddr_storage* ad=&ip_teid_db.db[idx].teid_list[match_idx].rem_addr;
           if(ad->ss_family==AF_INET){
             const struct sockaddr_in *sin=(const struct sockaddr_in *)ad;
             out_len+=put_int(&msg_buff,GTP_CTRL_IE_REMOTE_IP);
@@ -1295,8 +1302,8 @@ void *tun_to_udp(void *){
         loc_port=buffer[start_offset]*256+buffer[start_offset+1];
         rem_port=buffer[start_offset+2]*256+buffer[start_offset+3];
       }
-      for(int i=0;i<ip_teid_db[idx].teid_num;i++){
-        const filter_t* ft=&ip_teid_db[idx].teid_list[i].filter;
+      for(int i=0;i<ip_teid_db.db[idx].teid_num;i++){
+        const filter_t* ft=&ip_teid_db.db[idx].teid_list[i].filter;
         int match=0;
         if(ft->remote_ip.str_size!=-1){
           //log("Captured ft->remote_ip.str_size!=-1");
@@ -1347,7 +1354,7 @@ void *tun_to_udp(void *){
       }
       if(match_idx!=-1){
         //log("Capture match_idx!=-1");
-        teid=ip_teid_db[idx].teid_list[match_idx].teid_out.str_begin;
+        teid=ip_teid_db.db[idx].teid_list[match_idx].teid_out.str_begin;
         base_buffer[4]=teid[0];
         base_buffer[5]=teid[1];
         base_buffer[6]=teid[2];
@@ -1356,7 +1363,7 @@ void *tun_to_udp(void *){
         // update msg_length
         base_buffer[3]=nread & 0xFF;
         base_buffer[2]=(nread>>8) & 0xFF;
-        if((sendto(ip_teid_db[idx].teid_list[match_idx].local_fd, base_buffer, nread+8, 0, (const struct sockaddr *)&ip_teid_db[idx].teid_list[match_idx].rem_addr, sizeof(struct sockaddr_storage) )) < 0) {
+        if((sendto(ip_teid_db.db[idx].teid_list[match_idx].local_fd, base_buffer, nread+8, 0, (const struct sockaddr *)&ip_teid_db.db[idx].teid_list[match_idx].rem_addr, sizeof(struct sockaddr_storage) )) < 0) {
           perror("Sending to peer");
           exit(1);
         }
@@ -1463,42 +1470,42 @@ int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_
   str_int_map::iterator it=ip_idx_map.find(*ip);
   int idx=-1;
   if(it==ip_idx_map.end()){
-    if(ip_teid_db_size==ip_teid_db_entries){
-      if(ip_teid_db_size==0){ip_teid_db_size+=256;}
-      ip_teid_db_size*=2;
-      ip_teid_db=(ip_entry_t*)Realloc(ip_teid_db,ip_teid_db_size*sizeof(ip_entry_t));
-      for(int i=ip_teid_db_entries;i<ip_teid_db_size;i++){
-        ip_teid_db[i].teid_num=-1;
-        ip_teid_db[i].teid_list=NULL;
+    if(ip_teid_db.size==ip_teid_db.entries){
+      if(ip_teid_db.size==0){ip_teid_db.size+=256;}
+      ip_teid_db.size*=2;
+      ip_teid_db.db=(ip_entry_t*)Realloc(ip_teid_db.db,ip_teid_db.size*sizeof(ip_entry_t));
+      for(int i=ip_teid_db.entries;i<ip_teid_db.size;i++){
+        ip_teid_db.db[i].teid_num=-1;
+        ip_teid_db.db[i].teid_list=NULL;
       }
     }
-    for(idx=lastIdx;idx<ip_teid_db_size;idx++){
-      if(ip_teid_db[idx].teid_num==-1) {
+    for(idx=ip_teid_db.last_idx;idx<ip_teid_db.size;idx++){
+      if(ip_teid_db.db[idx].teid_num==-1) {
         break;
       }
     }
-    if(idx>=ip_teid_db_size) {
-      for(idx=0;idx<lastIdx;idx++){
-        if(ip_teid_db[idx].teid_num==-1) {
+    if(idx>=ip_teid_db.size) {
+      for(idx=0;idx<ip_teid_db.last_idx;idx++){
+        if(ip_teid_db.db[idx].teid_num==-1) {
           break;
         }
       }
     }
-    ip_teid_db[idx].teid_num=0;
-    copy_str_holder(&ip_teid_db[idx].ip,ip);
-    ip_idx_map[ip_teid_db[idx].ip]=idx;
-    ip_teid_db_entries++;
-    lastIdx=idx;
+    ip_teid_db.db[idx].teid_num=0;
+    copy_str_holder(&ip_teid_db.db[idx].ip,ip);
+    ip_idx_map[ip_teid_db.db[idx].ip]=idx;
+    ip_teid_db.entries++;
+    ip_teid_db.last_idx=idx;
   } else {
     idx=it->second;
   }
-  int filter_idx=ip_teid_db[idx].teid_num;
-  ip_teid_db[idx].teid_num++;
-  ip_teid_db[idx].teid_list=(teid_filter_t*)Realloc(ip_teid_db[idx].teid_list,ip_teid_db[idx].teid_num*sizeof(teid_filter_t));
+  int filter_idx=ip_teid_db.db[idx].teid_num;
+  ip_teid_db.db[idx].teid_num++;
+  ip_teid_db.db[idx].teid_list=(teid_filter_t*)Realloc(ip_teid_db.db[idx].teid_list,ip_teid_db.db[idx].teid_num*sizeof(teid_filter_t));
   log("Adding teid to id db idx %d, filter %d",idx,filter_idx);
 
-  ip_teid_db[idx].teid_list[filter_idx].teid_out=*teid;
-  filter_t* filter=&ip_teid_db[idx].teid_list[filter_idx].filter;
+  ip_teid_db.db[idx].teid_list[filter_idx].teid_out=*teid;
+  filter_t* filter=&ip_teid_db.db[idx].teid_list[filter_idx].filter;
   filter->proto=proto;
   filter->remote_port=rem_port;
   log("remote_port %d",rem_port);
@@ -1512,8 +1519,8 @@ int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_
   log("rem-ip");
   log_str_holder(&(filter->remote_ip));
 
-  ip_teid_db[idx].teid_list[filter_idx].local_fd=loc_fd;
-  memcpy(&ip_teid_db[idx].teid_list[filter_idx].rem_addr,rem_addr,sizeof(struct sockaddr_storage));
+  ip_teid_db.db[idx].teid_list[filter_idx].local_fd=loc_fd;
+  memcpy(&ip_teid_db.db[idx].teid_list[filter_idx].rem_addr,rem_addr,sizeof(struct sockaddr_storage));
 
   pthread_rwlock_unlock(&ip_teid_lock);
   return 0;
@@ -1526,35 +1533,35 @@ int remove_teid_from_db(str_holder* ip,str_holder* teid){
   if(it!=ip_idx_map.end()){
     int idx=it->second;
     int i=0;
-    for(i=0;i<ip_teid_db[idx].teid_num;i++){
-      if(!str_eq(*teid,ip_teid_db[idx].teid_list[i].teid_out)){
-        free_str_holder(&ip_teid_db[idx].teid_list[i].teid_out);
-        free_str_holder(&ip_teid_db[idx].teid_list[i].filter.remote_ip);
+    for(i=0;i<ip_teid_db.db[idx].teid_num;i++){
+      if(!str_eq(*teid,ip_teid_db.db[idx].teid_list[i].teid_out)){
+        free_str_holder(&ip_teid_db.db[idx].teid_list[i].teid_out);
+        free_str_holder(&ip_teid_db.db[idx].teid_list[i].filter.remote_ip);
         for(int j=0;j<local_ep_length;j++){
-          if(local_ep_db[j].fd==ip_teid_db[idx].teid_list[i].local_fd){
+          if(local_ep_db[j].fd==ip_teid_db.db[idx].teid_list[i].local_fd){
             local_ep_db[j].usage_num--;
             close_local_ep(j);
           }
         }
 
-        for(int k=i;k<ip_teid_db[idx].teid_num-1;k++){
-          ip_teid_db[idx].teid_list[k]=ip_teid_db[idx].teid_list[k+1];
+        for(int k=i;k<ip_teid_db.db[idx].teid_num-1;k++){
+          ip_teid_db.db[idx].teid_list[k]=ip_teid_db.db[idx].teid_list[k+1];
         }
-        ip_teid_db[idx].teid_num--;
-        if(ip_teid_db[idx].teid_num){
-          ip_teid_db[idx].teid_list=(teid_filter_t*)Realloc(ip_teid_db[idx].teid_list,ip_teid_db[idx].teid_num*sizeof(teid_filter_t));
+        ip_teid_db.db[idx].teid_num--;
+        if(ip_teid_db.db[idx].teid_num){
+          ip_teid_db.db[idx].teid_list=(teid_filter_t*)Realloc(ip_teid_db.db[idx].teid_list,ip_teid_db.db[idx].teid_num*sizeof(teid_filter_t));
         }
 //        break;  we should remove all teid entries. There can be several with different filter
       }
     }
-    if(ip_teid_db[idx].teid_num==0){  // the last teid was removed
-      ip_idx_map.erase(ip_teid_db[idx].ip);
-      del_addr(&ip_teid_db[idx].ip);
-      Free(ip_teid_db[idx].teid_list);
-      ip_teid_db[idx].teid_list=NULL;
-      ip_teid_db[idx].teid_num=-1;
-      free_str_holder(&ip_teid_db[idx].ip);
-      ip_teid_db_entries--;
+    if(ip_teid_db.db[idx].teid_num==0){  // the last teid was removed
+      ip_idx_map.erase(ip_teid_db.db[idx].ip);
+      del_addr(&ip_teid_db.db[idx].ip);
+      Free(ip_teid_db.db[idx].teid_list);
+      ip_teid_db.db[idx].teid_list=NULL;
+      ip_teid_db.db[idx].teid_num=-1;
+      free_str_holder(&ip_teid_db.db[idx].ip);
+      ip_teid_db.entries--;
     }
   }
 
