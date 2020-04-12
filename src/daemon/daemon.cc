@@ -83,10 +83,15 @@ str_int_map teidin_idx_map;
 pthread_rwlock_t   teid_idx_lock;
 
 // database of the pending IP prefix request
-int ip_req_db_size=0;
-int volatile ip_req_num=0;
-
-ip_req_db_t* ip_req_db=0;
+struct _ip_req_db {
+	/* actual database */
+	ip_req_db_t*	db;
+	/* size of the database (allocated size) */
+	int 		size;
+	/* number of entires in use */
+	int		num;
+};
+static struct _ip_req_db ip_req_db;
 
 // thread identyfiers
 int tun_handler_num=0;
@@ -930,33 +935,33 @@ int process_msg(msg_buffer* buffer, int fd){
           copy_str_holder(&teid_in,&str);
 
           // Put the data into the db
-          if(ip_req_db_size==ip_req_num){
+          if(ip_req_db.size==ip_req_db.num){
             // increase the db
             pthread_rwlock_wrlock(&teid_idx_lock);
-            ip_req_db_size+=10;
-            ip_req_db=(ip_req_db_t*)Realloc(ip_req_db,ip_req_db_size*sizeof(ip_req_db_t));
+            ip_req_db.size+=10;
+            ip_req_db.db=(ip_req_db_t*)Realloc(ip_req_db.db,ip_req_db.size*sizeof(ip_req_db_t));
             pthread_rwlock_unlock(&teid_idx_lock); // The new slots won't be accessed from other thread
 
-            for(int i=ip_req_num;i<ip_req_db_size;i++){
-              ip_req_db[i].teid_in.str_size=-1;
+            for(int i=ip_req_db.num;i<ip_req_db.size;i++){
+              ip_req_db.db[i].teid_in.str_size=-1;
             }
           }
 
           int idx=0;
-          for(;idx<ip_req_db_size;idx++){  // search for free slots, no need to lock, only this thread write it
-            if(ip_req_db[idx].teid_in.str_size==-1) { break; }
+          for(;idx<ip_req_db.size;idx++){  // search for free slots, no need to lock, only this thread write it
+            if(ip_req_db.db[idx].teid_in.str_size==-1) { break; }
           }
-          ip_req_db[idx].teid_in=teid_in;
-          ip_req_db[idx].teid_out=teid_out;
-          ip_req_db[idx].fd=fd;
-          ip_req_db[idx].ip.str_begin=(unsigned char*)Malloc(16*sizeof(unsigned char));
-          memcpy((void*)(ip_req_db[idx].ip.str_begin+8),ip.str_begin,8);
+          ip_req_db.db[idx].teid_in=teid_in;
+          ip_req_db.db[idx].teid_out=teid_out;
+          ip_req_db.db[idx].fd=fd;
+          ip_req_db.db[idx].ip.str_begin=(unsigned char*)Malloc(16*sizeof(unsigned char));
+          memcpy((void*)(ip_req_db.db[idx].ip.str_begin+8),ip.str_begin,8);
 
-          ip_req_db[idx].ip.str_size=16;
+          ip_req_db.db[idx].ip.str_size=16;
 
-          ip_req_db[idx].local_ep_fd=loc_fd;
-          memcpy(&ip_req_db[idx].rem_addr,rem_addr_ptr,sizeof(struct sockaddr_storage));
-          ip_req_num++; // no problem if the thread reads the old value
+          ip_req_db.db[idx].local_ep_fd=loc_fd;
+          memcpy(&ip_req_db.db[idx].rem_addr,rem_addr_ptr,sizeof(struct sockaddr_storage));
+          ip_req_db.num++; // no problem if the thread reads the old value
 
           pthread_rwlock_wrlock(&teid_idx_lock);
           teidin_idx_map[teid_in]=idx;
@@ -1403,7 +1408,7 @@ void *udp_to_tun(void* a){
           continue;
         }
         //    IPv6                 ICMPv6                      RA
-        if((buffer[8] & 0x20) && ( buffer[14] == 0x3A )  && ( buffer[48] == 0x86 )  &&  ip_req_num){
+        if((buffer[8] & 0x20) && ( buffer[14] == 0x3A )  && ( buffer[48] == 0x86 )  &&  ip_req_db.num){
              // there are outgoing IP request, ICMPv6 message received
           // check the teid in the database
           str_holder teid_in;
@@ -1437,7 +1442,7 @@ void *udp_to_tun(void* a){
                 int idx=it->second;
                 teidin_idx_map.erase(it);  // remove it from the index map
                 // copy the IP prefix, the place of it is
-                memcpy((void*)(ip_req_db[idx].ip.str_begin),prefix_pt,8);
+                memcpy((void*)(ip_req_db.db[idx].ip.str_begin),prefix_pt,8);
 
                 pthread_rwlock_unlock(&teid_idx_lock);
 
@@ -1471,6 +1476,7 @@ int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_
   int idx=-1;
   if(it==ip_idx_map.end()){
     if(ip_teid_db.size==ip_teid_db.entries){
+      /* enarge ip_teid_db */
       if(ip_teid_db.size==0){ip_teid_db.size+=256;}
       ip_teid_db.size*=2;
       ip_teid_db.db=(ip_entry_t*)Realloc(ip_teid_db.db,ip_teid_db.size*sizeof(ip_entry_t));
@@ -1479,6 +1485,7 @@ int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_
         ip_teid_db.db[i].teid_list=NULL;
       }
     }
+    /* find unused index */
     for(idx=ip_teid_db.last_idx;idx<ip_teid_db.size;idx++){
       if(ip_teid_db.db[idx].teid_num==-1) {
         break;
@@ -1491,6 +1498,7 @@ int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_
         }
       }
     }
+    /* initialize ip_idx_map entry */
     ip_teid_db.db[idx].teid_num=0;
     copy_str_holder(&ip_teid_db.db[idx].ip,ip);
     ip_idx_map[ip_teid_db.db[idx].ip]=idx;
@@ -1499,6 +1507,8 @@ int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_
   } else {
     idx=it->second;
   }
+  /* idx now points to the index of the new record */
+
   int filter_idx=ip_teid_db.db[idx].teid_num;
   ip_teid_db.db[idx].teid_num++;
   ip_teid_db.db[idx].teid_list=(teid_filter_t*)Realloc(ip_teid_db.db[idx].teid_list,ip_teid_db.db[idx].teid_num*sizeof(teid_filter_t));
@@ -1658,17 +1668,17 @@ int main(int argc, char **argv){
       if(rd==sizeof(int)){
         // read was ok.
         if(address_set_mode==2){// assign the IP to the interface
-          str_int_map::iterator it=ip_idx_map.find(ip_req_db[idx].ip);
+          str_int_map::iterator it=ip_idx_map.find(ip_req_db.db[idx].ip);
           if(it==ip_idx_map.end()) {
-            set_addr(&ip_req_db[idx].ip);
+            set_addr(&ip_req_db.db[idx].ip);
           }
         }
 
         // put the out teid into the maps
-        add_teid_to_db(&ip_req_db[idx].ip,&ip_req_db[idx].teid_out,NULL,-1,-1,0,ip_req_db[idx].local_ep_fd,&ip_req_db[idx].rem_addr);
+        add_teid_to_db(&ip_req_db.db[idx].ip,&ip_req_db.db[idx].teid_out,NULL,-1,-1,0,ip_req_db.db[idx].local_ep_fd,&ip_req_db.db[idx].rem_addr);
 
 //            if(address_set_mode==2){// assign the IP to the interface
-//              set_addr(&ip_req_db[idx].ip);
+//              set_addr(&ip_req_db.db[idx].ip);
 //            }
 
         // send back the ACK
@@ -1678,9 +1688,9 @@ int main(int argc, char **argv){
         int out_len=put_int(&msg_buff,22);
         out_len+=put_int(&msg_buff,GTP_CTRL_MSG_CREATE_ACK);
         out_len+=put_int(&msg_buff,GTP_CTRL_IE_OUT_TEID);
-        out_len+=put_str(&msg_buff,&ip_req_db[idx].teid_out);
+        out_len+=put_str(&msg_buff,&ip_req_db.db[idx].teid_out);
         out_len+=put_int(&msg_buff,GTP_CTRL_IE_IN_TEID);
-        out_len+=put_str(&msg_buff,&ip_req_db[idx].teid_in);
+        out_len+=put_str(&msg_buff,&ip_req_db.db[idx].teid_in);
 
         out_len+=put_int(&msg_buff,GTP_CTRL_IE_RES_CODE);
         out_len+=put_int(&msg_buff,0);
@@ -1690,21 +1700,21 @@ int main(int argc, char **argv){
         out_len+=put_str(&msg_buff,&str);
 
         out_len+=put_int(&msg_buff,GTP_CTRL_IE_ADDR);
-        out_len+=put_str(&msg_buff,&ip_req_db[idx].ip);
+        out_len+=put_str(&msg_buff,&ip_req_db.db[idx].ip);
 
         msg_buff.pos=0;
         put_int(&msg_buff,out_len);
         //int r=
-         send(ip_req_db[idx].fd,msg_buff.msg,out_len,0);
+         send(ip_req_db.db[idx].fd,msg_buff.msg,out_len,0);
         free_msg_buffer(&msg_buff);
 
         // teid in is not needed any more
-        free_str_holder(&ip_req_db[idx].teid_in);
+        free_str_holder(&ip_req_db.db[idx].teid_in);
 
         //log("Answer sent %d %d",out_len,r);
 
         // free the ip req db slot
-        ip_req_db[idx].teid_in.str_size=-1;
+        ip_req_db.db[idx].teid_in.str_size=-1;
       }
     }
 
