@@ -73,12 +73,6 @@ struct _ip_teid_db {
 };
 static struct _ip_teid_db ip_teid_db;
 
-// map that holds the incoming teid - index map
-str_int_map teidin_idx_map;
-
-// read or write lock of teidin_idx_map, ip_req_db
-pthread_rwlock_t   teid_idx_lock;
-
 // database of the pending IP prefix request (teid_in, teid_out, ip,fd, local_ep_fd, rem_addr)
 struct _ip_req_db {
 	/* actual database */
@@ -87,6 +81,11 @@ struct _ip_req_db {
 	int 		size;
 	/* number of entires in use */
 	int		num;
+	// map that holds the incoming teid - index map
+	str_int_map	teidin_idx_map;
+	// read or write lock of teidin_idx_map, ip_req_db
+	pthread_rwlock_t lock;
+
 };
 static struct _ip_req_db ip_req_db;
 
@@ -893,10 +892,10 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
           // Put the data into the db
           if(ip_req_db.size==ip_req_db.num){
             // increase the db
-            pthread_rwlock_wrlock(&teid_idx_lock);
+            pthread_rwlock_wrlock(&ip_req_db.lock);
             ip_req_db.size+=10;
             ip_req_db.db=(ip_req_db_t*)Realloc(ip_req_db.db,ip_req_db.size*sizeof(ip_req_db_t));
-            pthread_rwlock_unlock(&teid_idx_lock); // The new slots won't be accessed from other thread
+            pthread_rwlock_unlock(&ip_req_db.lock); // The new slots won't be accessed from other thread
 
             for(int i=ip_req_db.num;i<ip_req_db.size;i++){
               ip_req_db.db[i].teid_in.str_size=-1;
@@ -919,9 +918,9 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
           memcpy(&ip_req_db.db[idx].rem_addr,rem_addr_ptr,sizeof(struct sockaddr_storage));
           ip_req_db.num++; // no problem if the thread reads the old value
 
-          pthread_rwlock_wrlock(&teid_idx_lock);
-          teidin_idx_map[teid_in]=idx;
-          pthread_rwlock_unlock(&teid_idx_lock);
+          pthread_rwlock_wrlock(&ip_req_db.lock);
+          ip_req_db.teidin_idx_map[teid_in]=idx;
+          pthread_rwlock_unlock(&ip_req_db.lock);
 
           // send the solicit message
           send_solicit(&teid_out,loc_fd,rem_addr_ptr);
@@ -1453,9 +1452,9 @@ void *udp_to_tun(void* a){
           teid_in.str_size=4;
 
 	  /* obtain index by TEID */
-          pthread_rwlock_rdlock(&teid_idx_lock);
-          bool found= teidin_idx_map.find(teid_in)!=teidin_idx_map.end();
-          pthread_rwlock_unlock(&teid_idx_lock);
+          pthread_rwlock_rdlock(&ip_req_db.lock);
+          bool found= ip_req_db.teidin_idx_map.find(teid_in)!=ip_req_db.teidin_idx_map.end();
+          pthread_rwlock_unlock(&ip_req_db.lock);
 
           if(found){
             // This is the message we're looking for
@@ -1476,19 +1475,19 @@ void *udp_to_tun(void* a){
               option_length-=(ol*8);
             }
             if(prefix_pt){ // The prefix is found in the msg
-              pthread_rwlock_wrlock(&teid_idx_lock);
+              pthread_rwlock_wrlock(&ip_req_db.lock);
               str_int_map::iterator it;
-              if((it=teidin_idx_map.find(teid_in))!=teidin_idx_map.end()){ // maybe other udp_to_tun thread received a same message and sent it to the main thread already
+              if((it=ip_req_db.teidin_idx_map.find(teid_in))!=ip_req_db.teidin_idx_map.end()){ // maybe other udp_to_tun thread received a same message and sent it to the main thread already
                 int idx=it->second;
-                teidin_idx_map.erase(it);  // remove it from the index map
+                ip_req_db.teidin_idx_map.erase(it);  // remove it from the index map
                 // copy the IP prefix, the place of it is
                 memcpy((void*)(ip_req_db.db[idx].ip.str_begin),prefix_pt,8);
 
-                pthread_rwlock_unlock(&teid_idx_lock);
+                pthread_rwlock_unlock(&ip_req_db.lock);
 
                 write(pipefd[1],&idx,sizeof(int)); // send to the main thread
               } else {
-                pthread_rwlock_unlock(&teid_idx_lock);
+                pthread_rwlock_unlock(&ip_req_db.lock);
               }
 
             }
@@ -1624,7 +1623,7 @@ int main(int argc, char **argv){
   signal(SIGPIPE, SIG_IGN);
   process_options(argc, argv);  // check the command line options
   pthread_rwlock_init(&ip_teid_db.lock, NULL);
-  pthread_rwlock_init(&teid_idx_lock, NULL);
+  pthread_rwlock_init(&ip_req_db.lock, NULL);
   pthread_rwlock_init(&ep_idx_lock, NULL);
   log("Starting");
   if(start_ctrl_listen()<0){
