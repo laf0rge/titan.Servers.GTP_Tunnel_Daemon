@@ -101,13 +101,12 @@ struct _local_ep_db {
 	int		length;
 	/* number of entires in use */
 	int		num;
+	// IP:port -> endpoint db idx map
+	str_int_map	idx_map;
+	// read or write lock of it; -- UNUSED ?!?
+	pthread_rwlock_t lock;
 };
 static struct _local_ep_db local_ep_db;
-
-// IP:port -> endpoint db idx map
-str_int_map ep_idx_map;
-// read or write lock of it; -- UNUSED ?!?
-pthread_rwlock_t   ep_idx_lock;
 
 
 // epoll fd
@@ -182,7 +181,7 @@ void close_local_ep(int idx, int force=0){
     close(local_ep_db.db[idx].fd);
     local_ep_db.db[idx].fd=-1;
     local_ep_db.num--;
-    ep_idx_map.erase(local_ep_db.db[idx].key);
+    local_ep_db.idx_map.erase(local_ep_db.db[idx].key);
     log("closed");
   } else {
     log("Can't be closed, in use.");
@@ -583,7 +582,7 @@ static int process_msg_init(msg_buffer* buffer, int msg_len, msg_buffer *respons
                printf("Can't start thread (gtp_handler_0)");
                exit(1);
             }
-            ep_idx_map[local_ep_db.db[0].key]=0;
+            local_ep_db.idx_map[local_ep_db.db[0].key]=0;
             local_ep_db.db[0].usage_num=1;
             local_ep_db.db[0].fd=gtp_fd;
 
@@ -766,7 +765,7 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
           ep_key.str_size=sizeof(struct sockaddr_storage);
 
 
-          if(ep_idx_map.find(ep_key)==ep_idx_map.end()){ // local endpoint is not in the db
+          if(local_ep_db.idx_map.find(ep_key)==local_ep_db.idx_map.end()){ // local endpoint is not in the db
             int new_gtp_fd=open_udp_port(&loc_addr);
             if(new_gtp_fd==-1){
                free_str_holder(&teid_out);
@@ -776,14 +775,14 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
             }
 
             if(local_ep_db.length==local_ep_db.num){ //we need to extend the list
-//                pthread_rwlock_wrlock(ep_idx_lock);
+//                pthread_rwlock_wrlock(local_ep_db.lock);
               local_ep_db.length++;
               local_ep_db.db = (local_ep_db_t *)Realloc(local_ep_db.db,local_ep_db.length*sizeof(local_ep_db_t));
               local_ep_db.db[local_ep_db.num].fd=-1;
               local_ep_db.db[local_ep_db.num].usage_num=0;
               local_ep_db.db[local_ep_db.num].key.str_begin=(const unsigned char*)Malloc(sizeof(struct sockaddr_storage));
               local_ep_db.db[local_ep_db.num].key.str_size=sizeof(struct sockaddr_storage);
-//                pthread_rwlock_unlock(ep_idx_lock);
+//                pthread_rwlock_unlock(local_ep_db.lock);
             }
 
             //tun_to_udp
@@ -794,7 +793,7 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
             local_ep_db.db[i].fd=new_gtp_fd;
             local_ep_db.db[i].usage_num++;
             memcpy((void *)local_ep_db.db[i].key.str_begin,&loc_addr,sizeof(struct sockaddr_storage));
-            ep_idx_map[local_ep_db.db[i].key]=i;
+            local_ep_db.idx_map[local_ep_db.db[i].key]=i;
             local_ep_db.num++;
             loc_fd=local_ep_db.db[i].fd;
 
@@ -828,7 +827,7 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
               }
             }
           } else {
-            int idx=ep_idx_map[ep_key];
+            int idx=local_ep_db.idx_map[ep_key];
             loc_fd=local_ep_db.db[idx].fd;
             local_ep_db.db[idx].usage_num++;
           }
@@ -1624,7 +1623,7 @@ int main(int argc, char **argv){
   process_options(argc, argv);  // check the command line options
   pthread_rwlock_init(&ip_teid_db.lock, NULL);
   pthread_rwlock_init(&ip_req_db.lock, NULL);
-  pthread_rwlock_init(&ep_idx_lock, NULL);
+  pthread_rwlock_init(&local_ep_db.lock, NULL);
   log("Starting");
   if(start_ctrl_listen()<0){
     printf("Can't listen on control port\r\n");
