@@ -98,7 +98,7 @@ struct _local_ep_db {
 	/* actual database */
 	local_ep_db_t*	db;
 	/* size of the database (allocated size) */
-	int		length;
+	int		size;
 	/* number of entires in use */
 	int		num;
 	// IP:port -> endpoint db idx map
@@ -426,7 +426,7 @@ static int process_msg_get_teid(msg_buffer* buffer, int msg_len, msg_buffer *res
 
           //find the address of the local GTP endpoint
           int ep_idx=-1;
-          for(ep_idx=0;ep_idx<local_ep_db.length;ep_idx++){
+          for(ep_idx=0;ep_idx<local_ep_db.size;ep_idx++){
             if(local_ep_db.db[ep_idx].fd==loc_gtp_tun_fd) break;
           }
 
@@ -547,7 +547,7 @@ static int process_msg_init(msg_buffer* buffer, int msg_len, msg_buffer *respons
         if(!threads_started){
           // init the local endpoint db
           // add the default entry
-          local_ep_db.length=1;
+          local_ep_db.size=1;
           local_ep_db.num=1;
           local_ep_db.db = (local_ep_db_t *)Malloc(sizeof(local_ep_db_t));
           local_ep_db.db[0].fd=-1;
@@ -774,10 +774,10 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
                return 0;
             }
 
-            if(local_ep_db.length==local_ep_db.num){ //we need to extend the list
+            if(local_ep_db.size==local_ep_db.num){ //we need to extend the list
 //                pthread_rwlock_wrlock(local_ep_db.lock);
-              local_ep_db.length++;
-              local_ep_db.db = (local_ep_db_t *)Realloc(local_ep_db.db,local_ep_db.length*sizeof(local_ep_db_t));
+              local_ep_db.size++;
+              local_ep_db.db = (local_ep_db_t *)Realloc(local_ep_db.db,local_ep_db.size*sizeof(local_ep_db_t));
               local_ep_db.db[local_ep_db.num].fd=-1;
               local_ep_db.db[local_ep_db.num].usage_num=0;
               local_ep_db.db[local_ep_db.num].key.str_begin=(const unsigned char*)Malloc(sizeof(struct sockaddr_storage));
@@ -787,7 +787,7 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
 
             //tun_to_udp
             int i;
-            for(i=1;i<local_ep_db.length;i++){
+            for(i=1;i<local_ep_db.size;i++){
               if(local_ep_db.db[i].fd==-1) break;
             }
             local_ep_db.db[i].fd=new_gtp_fd;
@@ -1586,7 +1586,7 @@ int remove_teid_from_db(str_holder* ip,str_holder* teid){
       if(!str_eq(*teid,ip_teid_db.db[idx].teid_list[i].teid_out)){
         free_str_holder(&ip_teid_db.db[idx].teid_list[i].teid_out);
         free_str_holder(&ip_teid_db.db[idx].teid_list[i].filter.remote_ip);
-        for(int j=0;j<local_ep_db.length;j++){
+        for(int j=0;j<local_ep_db.size;j++){
           if(local_ep_db.db[j].fd==ip_teid_db.db[idx].teid_list[i].local_fd){
             local_ep_db.db[j].usage_num--;
             close_local_ep(j);
