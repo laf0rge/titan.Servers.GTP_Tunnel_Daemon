@@ -306,56 +306,23 @@ int open_udp_port(struct sockaddr_storage *local_addr){
   return fd;
 }
 
-int process_msg(msg_buffer* buffer, int fd){
-
-  inc_buff_size(buffer,4);
-
-  int rd=read(fd, buffer->msg+buffer->pos, buffer->size - buffer->pos);
-
-  if(rd<=0){
-  log("Process msg rd < 0");
-    return -1;
-  }
-  buffer->pos+=rd;
-  int curr_pos=buffer->pos;
-
-  while(curr_pos>=4){
-    buffer->pos=0;
-    int msg_len;
-    if(get_int(buffer,&msg_len)<0) {
-      log("Process msg get_int < 0");
-      return -1;
-    }  // read the msg length
-    log("MSG len %d",msg_len);
-    if(msg_len>curr_pos){  // we need more data
-      log("Process msg_len>curr_pos");
-      buffer->pos=curr_pos;
-      inc_buff_size(buffer,msg_len-curr_pos); // reserve enough space in the buffer to receive data
-      return 0;
-    }
-    if(msg_len<8) {
-      log("Process msg msg_len < 0");
-      return -1;
-    } // No msg type????
-    int msg_type;
-    if(get_int(buffer,&msg_type)<0) {
-      log("Process msg get_int2 < 0");
-      return -1;
-    } // read the msg type
-    log("MSG type %d",msg_type);
-    switch(msg_type){
-      case GTP_CTRL_MSG_GET_TEID:{
+static int process_msg_get_teid(msg_buffer* buffer, int msg_len, msg_buffer *response)
+{
         log("GTP_CTRL_MSG_GET_TEID received");
+
         str_holder local_addr;
         local_addr.str_size=-1;
         local_addr.str_begin=NULL;
+
         str_holder remote_addr;
         remote_addr.str_size=-1;
         remote_addr.str_begin=NULL;
+
         int local_port=-1;
         int remote_port=-1;
         int protocol_id=-1;
 
+	/* parse information elements */
         while(msg_len>buffer->pos){
           int ie_type;
           get_int(buffer,&ie_type);
@@ -450,11 +417,9 @@ int process_msg(msg_buffer* buffer, int fd){
           }
         }
 
-        msg_buffer msg_buff;
-        init_msg_buffer(&msg_buff);
-        int out_len=put_int(&msg_buff,22);
-        out_len+=put_int(&msg_buff,GTP_CTRL_MSG_GET_TEID_DATA);
-        out_len+=put_int(&msg_buff,GTP_CTRL_IE_RES_CODE);
+        int out_len=put_int(response,22);
+        out_len+=put_int(response,GTP_CTRL_MSG_GET_TEID_DATA);
+        out_len+=put_int(response,GTP_CTRL_IE_RES_CODE);
 
         if(match_idx!=-1){
           log("found the tunnel data");
@@ -469,47 +434,47 @@ int process_msg(msg_buffer* buffer, int fd){
 
           str_holder str;
 
-          out_len+=put_int(&msg_buff,0);
+          out_len+=put_int(response,0);
 
-          out_len+=put_int(&msg_buff,GTP_CTRL_IE_OUT_TEID);
-          out_len+=put_str(&msg_buff,&ip_teid_db.db[idx].teid_list[match_idx].teid_out);
+          out_len+=put_int(response,GTP_CTRL_IE_OUT_TEID);
+          out_len+=put_str(response,&ip_teid_db.db[idx].teid_list[match_idx].teid_out);
 
 
           const struct sockaddr_storage* ad=&ip_teid_db.db[idx].teid_list[match_idx].rem_addr;
           if(ad->ss_family==AF_INET){
             const struct sockaddr_in *sin=(const struct sockaddr_in *)ad;
-            out_len+=put_int(&msg_buff,GTP_CTRL_IE_REMOTE_IP);
+            out_len+=put_int(response,GTP_CTRL_IE_REMOTE_IP);
             str.str_begin=(const unsigned char*)&(sin->sin_addr);
             str.str_size=4;
-            out_len+=put_str(&msg_buff,&str);
-            out_len+=put_int(&msg_buff,GTP_CTRL_IE_REMOTE_PORT);
-            out_len+=put_int(&msg_buff,ntohs(sin->sin_port));
+            out_len+=put_str(response,&str);
+            out_len+=put_int(response,GTP_CTRL_IE_REMOTE_PORT);
+            out_len+=put_int(response,ntohs(sin->sin_port));
           } else {
             const struct sockaddr_in6 *sin=(const struct sockaddr_in6 *)ad;
-            out_len+=put_int(&msg_buff,GTP_CTRL_IE_REMOTE_IP);
+            out_len+=put_int(response,GTP_CTRL_IE_REMOTE_IP);
             str.str_begin=(const unsigned char*)&(sin->sin6_addr);
             str.str_size=16;
-            out_len+=put_str(&msg_buff,&str);
-            out_len+=put_int(&msg_buff,GTP_CTRL_IE_REMOTE_PORT);
-            out_len+=put_int(&msg_buff,ntohs(sin->sin6_port));
+            out_len+=put_str(response,&str);
+            out_len+=put_int(response,GTP_CTRL_IE_REMOTE_PORT);
+            out_len+=put_int(response,ntohs(sin->sin6_port));
           }
           ad=(const struct sockaddr_storage*)local_ep_db.db[ep_idx].key.str_begin;
           if(ad->ss_family==AF_INET){
             const struct sockaddr_in *sin=(const struct sockaddr_in *)ad;
-            out_len+=put_int(&msg_buff,GTP_CTRL_IE_LOCAL_IP);
+            out_len+=put_int(response,GTP_CTRL_IE_LOCAL_IP);
             str.str_begin=(const unsigned char*)&(sin->sin_addr);
             str.str_size=4;
-            out_len+=put_str(&msg_buff,&str);
-            out_len+=put_int(&msg_buff,GTP_CTRL_IE_LOCAL_PORT);
-            out_len+=put_int(&msg_buff,ntohs(sin->sin_port));
+            out_len+=put_str(response,&str);
+            out_len+=put_int(response,GTP_CTRL_IE_LOCAL_PORT);
+            out_len+=put_int(response,ntohs(sin->sin_port));
           } else {
             const struct sockaddr_in6 *sin=(const struct sockaddr_in6 *)ad;
-            out_len+=put_int(&msg_buff,GTP_CTRL_IE_LOCAL_IP);
+            out_len+=put_int(response,GTP_CTRL_IE_LOCAL_IP);
             str.str_begin=(const unsigned char*)&(sin->sin6_addr);
             str.str_size=16;
-            out_len+=put_str(&msg_buff,&str);
-            out_len+=put_int(&msg_buff,GTP_CTRL_IE_LOCAL_PORT);
-            out_len+=put_int(&msg_buff,ntohs(sin->sin6_port));
+            out_len+=put_str(response,&str);
+            out_len+=put_int(response,GTP_CTRL_IE_LOCAL_PORT);
+            out_len+=put_int(response,ntohs(sin->sin6_port));
           }
 
           pthread_rwlock_unlock(&ip_teid_lock); // the lock is not needed any more
@@ -517,30 +482,26 @@ int process_msg(msg_buffer* buffer, int fd){
         } else {
           log("tunnel data not found");
           pthread_rwlock_unlock(&ip_teid_lock); // the lock is not needed any more
-          out_len+=put_int(&msg_buff,0);
+          out_len+=put_int(response,0);
         }
-        msg_buff.pos=0;
-        put_int(&msg_buff,out_len);
+        response->pos=0;
+        put_int(response, out_len);
         log("output length = %i", out_len);
-        log("sending response");
-#ifdef DEBUG
-	for(int i=0;i<out_len;i++){
-	  printf("%02X", msg_buff.msg[i]);
-	}printf("\n");
-#endif
-        int s = send(fd,msg_buff.msg,out_len,0);
-        log("response sent %i", s);
-        free_msg_buffer(&msg_buff);
+	response->pos = out_len;
 
-        break;
-      }
+	return 0;
+}
 
-      case GTP_CTRL_MSG_INIT:{
+
+static int process_msg_init(msg_buffer* buffer, int msg_len, msg_buffer *response)
+{
         log("GTP_CTRL_MSG_INIT msg");
         char *local_addr=NULL;
         char *remote_addr=NULL;
         int local_port=-1;
         int remote_port=-1;
+
+	/* parse information elements */
         while(msg_len>buffer->pos){
           int ie_type;
           str_holder str;
@@ -649,27 +610,23 @@ int process_msg(msg_buffer* buffer, int fd){
         }
 
         // send back the ACK
-        msg_buffer msg_buff;
-        init_msg_buffer(&msg_buff);
-
-        put_int(&msg_buff,26);
-        put_int(&msg_buff,GTP_CTRL_MSG_INIT_ACK);
-        put_int(&msg_buff,GTP_CTRL_IE_RES_CODE);
-        put_int(&msg_buff,0);
-        put_int(&msg_buff,GTP_CTRL_IE_RES_TXT);
+        put_int(response,26);
+        put_int(response,GTP_CTRL_MSG_INIT_ACK);
+        put_int(response,GTP_CTRL_IE_RES_CODE);
+        put_int(response,0);
+        put_int(response,GTP_CTRL_IE_RES_TXT);
 
         str_holder str;
         str.str_begin=(const unsigned char*)"OK";
         str.str_size=2;
-        put_str(&msg_buff,&str);
+        put_str(response,&str);
 
-        /*int r =*/ send(fd,msg_buff.msg,msg_buff.pos,0);
+	return 0;
+}
 
-        free_msg_buffer(&msg_buff);
-        break;
-      }
-
-      case GTP_CTRL_MSG_CREATE:{
+static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffer *response)
+{
+        log("GTP_CTRL_MSG_CREATE msg");
         str_holder teid_in;
         teid_in.str_size=-1;
         teid_in.str_begin=NULL;
@@ -696,6 +653,7 @@ int process_msg(msg_buffer* buffer, int fd){
         int local_port=-1;
         int remote_port=-1;
 
+	/* parse information elements */
         while(msg_len>buffer->pos){
           int ie_type;
           //int ie_val;
@@ -905,33 +863,28 @@ int process_msg(msg_buffer* buffer, int fd){
 //            }
 
           // send back the ACK
-          msg_buffer msg_buff;
           str_holder str;
-          init_msg_buffer(&msg_buff);
-          int out_len=put_int(&msg_buff,22);
-          out_len+=put_int(&msg_buff,GTP_CTRL_MSG_CREATE_ACK);
-          out_len+=put_int(&msg_buff,GTP_CTRL_IE_OUT_TEID);
-          out_len+=put_str(&msg_buff,&teid_out);
-          out_len+=put_int(&msg_buff,GTP_CTRL_IE_IN_TEID);
-          out_len+=put_str(&msg_buff,&teid_in);
+          int out_len=put_int(response,22);
+          out_len+=put_int(response,GTP_CTRL_MSG_CREATE_ACK);
+          out_len+=put_int(response,GTP_CTRL_IE_OUT_TEID);
+          out_len+=put_str(response,&teid_out);
+          out_len+=put_int(response,GTP_CTRL_IE_IN_TEID);
+          out_len+=put_str(response,&teid_in);
 
-          out_len+=put_int(&msg_buff,GTP_CTRL_IE_RES_CODE);
-          out_len+=put_int(&msg_buff,0);
-          out_len+=put_int(&msg_buff,GTP_CTRL_IE_RES_TXT);
+          out_len+=put_int(response,GTP_CTRL_IE_RES_CODE);
+          out_len+=put_int(response,0);
+          out_len+=put_int(response,GTP_CTRL_IE_RES_TXT);
           str.str_begin=(const unsigned char*)"OK";
           str.str_size=2;
-          out_len+=put_str(&msg_buff,&str);
+          out_len+=put_str(response,&str);
 
-          out_len+=put_int(&msg_buff,GTP_CTRL_IE_ADDR);
-          out_len+=put_str(&msg_buff,&ip);
+          out_len+=put_int(response,GTP_CTRL_IE_ADDR);
+          out_len+=put_str(response,&ip);
 
-          msg_buff.pos=0;
-          put_int(&msg_buff,out_len);
-          log("%X %X %X %X",msg_buff.msg[0],msg_buff.msg[1],msg_buff.msg[2],msg_buff.msg[3]);
-          int r=
-          send(fd,msg_buff.msg,out_len,0);
-          free_msg_buffer(&msg_buff);
-          log("Answer sent %d %d",out_len,r);
+          response->pos=0;
+          put_int(response, out_len);
+	  response->pos = out_len;
+          log("%X %X %X %X",response->msg[0],response->msg[1],response->msg[2],response->msg[3]);
         } else {  // IPv6 prefix request is needed
           // We need a local copy of the incoming teid
           str_holder str=teid_in;
@@ -973,10 +926,14 @@ int process_msg(msg_buffer* buffer, int fd){
           // send the solicit message
           send_solicit(&teid_out,loc_fd,rem_addr_ptr);
         }
-        break;
-      }
 
-      case GTP_CTRL_MSG_DESTROY:{
+	return 0;
+}
+
+static int process_msg_destroy(msg_buffer* buffer, int msg_len, msg_buffer *response)
+{
+        log("GTP_CTRL_MSG_DESTROY msg");
+
         str_holder teid_in;
         teid_in.str_size=-1;
         teid_in.str_begin=NULL;
@@ -1016,26 +973,99 @@ int process_msg(msg_buffer* buffer, int fd){
         }
 
         remove_teid_from_db(&ip,&teid_out);
-        break;
-      }
+	return 0;
+}
 
-      case GTP_CTRL_MSG_BYE:{
-        msg_buffer msg_buff;
-        init_msg_buffer(&msg_buff);
+static int process_msg_bye(msg_buffer* buffer, int msg_len, msg_buffer *response)
+{
+        log("GTP_CTRL_MSG_BYE msg");
+
         close_local_ep(0,1);  // try to close the default endpoint
-        put_int(&msg_buff,8);
-        put_int(&msg_buff,GTP_CTRL_MSG_BYE_ACK);
-        send(fd,msg_buff.msg,msg_buff.pos,0);
-        free_msg_buffer(&msg_buff);
-        return -1; // just close the fd after sending bye ack
+        put_int(response,8);
+        put_int(response,GTP_CTRL_MSG_BYE_ACK);
+        return -23; // magic return to close the fd after sending bye ack
+}
 
+
+int process_msg(msg_buffer* buffer, int fd){
+
+  inc_buff_size(buffer,4);
+
+  int rd=read(fd, buffer->msg+buffer->pos, buffer->size - buffer->pos);
+
+  if(rd<=0){
+  log("Process msg rd < 0");
+    return -1;
+  }
+  buffer->pos+=rd;
+  int curr_pos=buffer->pos;
+
+  while(curr_pos>=4){
+    buffer->pos=0;
+    int msg_len;
+    if(get_int(buffer,&msg_len)<0) {
+      log("Process msg get_int < 0");
+      return -1;
+    }  // read the msg length
+    log("MSG len %d",msg_len);
+    if(msg_len>curr_pos){  // we need more data
+      log("Process msg_len>curr_pos");
+      buffer->pos=curr_pos;
+      inc_buff_size(buffer,msg_len-curr_pos); // reserve enough space in the buffer to receive data
+      return 0;
+    }
+    if(msg_len<8) {
+      log("Process msg msg_len < 0");
+      return -1;
+    } // No msg type????
+    int msg_type;
+    if(get_int(buffer,&msg_type)<0) {
+      log("Process msg get_int2 < 0");
+      return -1;
+    } // read the msg type
+    log("MSG type %d",msg_type);
+
+    msg_buffer response;
+    init_msg_buffer(&response);
+
+    int rc;
+    switch(msg_type){
+      case GTP_CTRL_MSG_GET_TEID:
+	rc = process_msg_get_teid(buffer, msg_len, &response);
+	break;
+      case GTP_CTRL_MSG_INIT:
+	rc = process_msg_init(buffer, msg_len, &response);
         break;
-      }
-
+      case GTP_CTRL_MSG_CREATE:
+	rc = process_msg_create(fd, buffer, msg_len, &response);
+        break;
+      case GTP_CTRL_MSG_DESTROY:
+	rc = process_msg_destroy(buffer, msg_len, &response);
+        break;
+      case GTP_CTRL_MSG_BYE:
+	rc = process_msg_bye(buffer, msg_len, &response);
+        break;
       default:
         // Unknown message, ignore it
         break;
     }
+    if (rc < 0 && rc != -23)
+	    return rc;
+
+// MOVE TO PROCESS_MSG
+        log("sending response");
+#ifdef DEBUG
+	for(int i=0;i<response.pos;i++){
+	  printf("%02X", response.msg[i]);
+	}printf("\n");
+#endif
+        int s = send(fd,response.msg,response.pos,0);
+        log("response sent %i", s);
+        free_msg_buffer(&response);
+// MOVE TO PROCESS_MSG
+    if (rc < 0)
+	    return -1;
+
 
     if(msg_len!=curr_pos){  // there is data in the buffer, move it to the beginning
       memmove(buffer->msg,buffer->msg+msg_len,curr_pos-msg_len);
