@@ -1323,7 +1323,11 @@ void *tun_to_udp(void *){
     str_int_map::const_iterator it;
     pthread_rwlock_rdlock(&ip_teid_lock);
     it=ip_idx_map.find(ip);
-    if(it!=ip_idx_map.end()){
+    if(it==ip_idx_map.end()){
+      // NO ip  -> teid map, just drop the packet
+      pthread_rwlock_unlock(&ip_teid_lock);
+      continue;
+    }
       //log("it!=ip_idx_map.end()");
       const unsigned char* teid;
       int idx=it->second;
@@ -1392,7 +1396,10 @@ void *tun_to_udp(void *){
         }
 
       }
-      if(match_idx!=-1){
+      if(match_idx==-1){
+        pthread_rwlock_unlock(&ip_teid_lock); // the lock is not needed any more
+	continue;
+      }
         //log("Capture match_idx!=-1");
         teid=ip_teid_db.db[idx].teid_list[match_idx].teid_out.str_begin;
         base_buffer[4]=teid[0];
@@ -1407,18 +1414,7 @@ void *tun_to_udp(void *){
           perror("Sending to peer");
           exit(1);
         }
-      } else {
-        pthread_rwlock_unlock(&ip_teid_lock); // the lock is not needed any more
-      }
-    } else {
-      // NO ip  -> teid map, just drop the packet
-      pthread_rwlock_unlock(&ip_teid_lock);
     }
-
-
-
-  }
-
 }
 void *udp_to_tun(void* a){
 // for the magic number check the IPv6 RFCs
