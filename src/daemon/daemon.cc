@@ -98,9 +98,15 @@ int tun_handler_num=0;
 pthread_t tun_handler;
 
 // local udp endpoint/port database
-int local_ep_length=0;
-int local_ep_num=0;
-local_ep_db_t *local_ep_db=NULL;
+struct _local_ep_db {
+	/* actual database */
+	local_ep_db_t*	db;
+	/* size of the database (allocated size) */
+	int		length;
+	/* number of entires in use */
+	int		num;
+};
+static struct _local_ep_db local_ep_db;
 
 // IP:port -> endpoint db idx map
 str_int_map ep_idx_map;
@@ -176,11 +182,11 @@ void close_local_ep(int idx, int force=0){
     return;
   }
   
-  if(local_ep_db[idx].usage_num == 0  && local_ep_db[idx].fd!=-1){
-    close(local_ep_db[idx].fd);
-    local_ep_db[idx].fd=-1;
-    local_ep_num--;
-    ep_idx_map.erase(local_ep_db[idx].key);
+  if(local_ep_db.db[idx].usage_num == 0  && local_ep_db.db[idx].fd!=-1){
+    close(local_ep_db.db[idx].fd);
+    local_ep_db.db[idx].fd=-1;
+    local_ep_db.num--;
+    ep_idx_map.erase(local_ep_db.db[idx].key);
     log("closed");
   } else {
     log("Can't be closed, in use.");
@@ -460,8 +466,8 @@ int process_msg(msg_buffer* buffer, int fd){
 
           //find the address of the local GTP endpoint
           int ep_idx=-1;
-          for(ep_idx=0;ep_idx<local_ep_length;ep_idx++){
-            if(local_ep_db[ep_idx].fd==loc_gtp_tun_fd) break;
+          for(ep_idx=0;ep_idx<local_ep_db.length;ep_idx++){
+            if(local_ep_db.db[ep_idx].fd==loc_gtp_tun_fd) break;
           }
 
           str_holder str;
@@ -490,7 +496,7 @@ int process_msg(msg_buffer* buffer, int fd){
             out_len+=put_int(&msg_buff,GTP_CTRL_IE_REMOTE_PORT);
             out_len+=put_int(&msg_buff,ntohs(sin->sin6_port));
           }
-          ad=(const struct sockaddr_storage*)local_ep_db[ep_idx].key.str_begin;
+          ad=(const struct sockaddr_storage*)local_ep_db.db[ep_idx].key.str_begin;
           if(ad->ss_family==AF_INET){
             const struct sockaddr_in *sin=(const struct sockaddr_in *)ad;
             out_len+=put_int(&msg_buff,GTP_CTRL_IE_LOCAL_IP);
@@ -585,13 +591,13 @@ int process_msg(msg_buffer* buffer, int fd){
         if(!threads_started){
           // init the local endpoint db
           // add the default entry
-          local_ep_length=1;
-          local_ep_num=1;
-          local_ep_db = (local_ep_db_t *)Malloc(sizeof(local_ep_db_t));
-          local_ep_db[0].fd=-1;
-          local_ep_db[0].usage_num=0;
-          local_ep_db[0].key.str_begin=(const unsigned char*)Malloc(sizeof(struct sockaddr_storage));
-          local_ep_db[0].key.str_size=sizeof(struct sockaddr_storage);
+          local_ep_db.length=1;
+          local_ep_db.num=1;
+          local_ep_db.db = (local_ep_db_t *)Malloc(sizeof(local_ep_db_t));
+          local_ep_db.db[0].fd=-1;
+          local_ep_db.db[0].usage_num=0;
+          local_ep_db.db[0].key.str_begin=(const unsigned char*)Malloc(sizeof(struct sockaddr_storage));
+          local_ep_db.db[0].key.str_size=sizeof(struct sockaddr_storage);
 
           // init the local endpoint db
           // add the default entry
@@ -600,7 +606,7 @@ int process_msg(msg_buffer* buffer, int fd){
             tun_handler_num=1;
             log("Process msg local_addr");
             //udp_to_tun
-            if(fill_addr_struct(local_addr,local_port,(struct sockaddr_storage*)local_ep_db[0].key.str_begin,remote_addr,remote_port,&default_rem_addr)<0){
+            if(fill_addr_struct(local_addr,local_port,(struct sockaddr_storage*)local_ep_db.db[0].key.str_begin,remote_addr,remote_port,&default_rem_addr)<0){
               Free(local_addr);
               Free(remote_addr);
               log("Process msg fill_addr_struct<0");
@@ -610,7 +616,7 @@ int process_msg(msg_buffer* buffer, int fd){
             Free(local_addr);
             Free(remote_addr);
             int gtp_fd;
-            if((gtp_fd=open_udp_port((struct sockaddr_storage*)local_ep_db[0].key.str_begin))<0){
+            if((gtp_fd=open_udp_port((struct sockaddr_storage*)local_ep_db.db[0].key.str_begin))<0){
             log("Process msg open_udp_port<0");
               return -1;
             }
@@ -620,9 +626,9 @@ int process_msg(msg_buffer* buffer, int fd){
                printf("Can't start thread (gtp_handler_0)");
                exit(1);
             }
-            ep_idx_map[local_ep_db[0].key]=0;
-            local_ep_db[0].usage_num=1;
-            local_ep_db[0].fd=gtp_fd;
+            ep_idx_map[local_ep_db.db[0].key]=0;
+            local_ep_db.db[0].usage_num=1;
+            local_ep_db.db[0].fd=gtp_fd;
 
             // add fd to the epoll list
             struct epoll_event event;
@@ -815,28 +821,28 @@ int process_msg(msg_buffer* buffer, int fd){
                return 0;
             }
 
-            if(local_ep_length==local_ep_num){ //we need to extend the list
+            if(local_ep_db.length==local_ep_db.num){ //we need to extend the list
 //                pthread_rwlock_wrlock(ep_idx_lock);
-              local_ep_length++;
-              local_ep_db = (local_ep_db_t *)Realloc(local_ep_db,local_ep_length*sizeof(local_ep_db_t));
-              local_ep_db[local_ep_num].fd=-1;
-              local_ep_db[local_ep_num].usage_num=0;
-              local_ep_db[local_ep_num].key.str_begin=(const unsigned char*)Malloc(sizeof(struct sockaddr_storage));
-              local_ep_db[local_ep_num].key.str_size=sizeof(struct sockaddr_storage);
+              local_ep_db.length++;
+              local_ep_db.db = (local_ep_db_t *)Realloc(local_ep_db.db,local_ep_db.length*sizeof(local_ep_db_t));
+              local_ep_db.db[local_ep_db.num].fd=-1;
+              local_ep_db.db[local_ep_db.num].usage_num=0;
+              local_ep_db.db[local_ep_db.num].key.str_begin=(const unsigned char*)Malloc(sizeof(struct sockaddr_storage));
+              local_ep_db.db[local_ep_db.num].key.str_size=sizeof(struct sockaddr_storage);
 //                pthread_rwlock_unlock(ep_idx_lock);
             }
 
             //tun_to_udp
             int i;
-            for(i=1;i<local_ep_length;i++){
-              if(local_ep_db[i].fd==-1) break;
+            for(i=1;i<local_ep_db.length;i++){
+              if(local_ep_db.db[i].fd==-1) break;
             }
-            local_ep_db[i].fd=new_gtp_fd;
-            local_ep_db[i].usage_num++;
-            memcpy((void *)local_ep_db[i].key.str_begin,&loc_addr,sizeof(struct sockaddr_storage));
-            ep_idx_map[local_ep_db[i].key]=i;
-            local_ep_num++;
-            loc_fd=local_ep_db[i].fd;
+            local_ep_db.db[i].fd=new_gtp_fd;
+            local_ep_db.db[i].usage_num++;
+            memcpy((void *)local_ep_db.db[i].key.str_begin,&loc_addr,sizeof(struct sockaddr_storage));
+            ep_idx_map[local_ep_db.db[i].key]=i;
+            local_ep_db.num++;
+            loc_fd=local_ep_db.db[i].fd;
 
             // add fd to the epoll list
             struct epoll_event event;
@@ -848,12 +854,12 @@ int process_msg(msg_buffer* buffer, int fd){
             }
 
 
-            if(local_ep_num>=(tun_handler_num*gtp_per_thread)){ // create threads if needed
+            if(local_ep_db.num>=(tun_handler_num*gtp_per_thread)){ // create threads if needed
               pthread_t gtp_handler;
 
-              if ( pthread_create(&gtp_handler, NULL,udp_to_tun , &local_ep_db[i].fd) )
+              if ( pthread_create(&gtp_handler, NULL,udp_to_tun , &local_ep_db.db[i].fd) )
               {
-                 printf("Can't start thread (gtp_handler_%i)", local_ep_num-1);
+                 printf("Can't start thread (gtp_handler_%i)", local_ep_db.num-1);
                  exit(1);
               }
 
@@ -869,19 +875,19 @@ int process_msg(msg_buffer* buffer, int fd){
             }
           } else {
             int idx=ep_idx_map[ep_key];
-            loc_fd=local_ep_db[idx].fd;
-            local_ep_db[idx].usage_num++;
+            loc_fd=local_ep_db.db[idx].fd;
+            local_ep_db.db[idx].usage_num++;
           }
 
         } else {
-          loc_fd=local_ep_db[0].fd;
+          loc_fd=local_ep_db.db[0].fd;
           if(loc_fd==-1){
             free_str_holder(&teid_out);
             send_error_ind(fd,"No tunnel addresses");
             log("Process msg no tunnel addresses");
             return 0;
           }
-          local_ep_db[0].usage_num++;
+          local_ep_db.db[0].usage_num++;
           rem_addr_ptr=&default_rem_addr;
         }
 
@@ -1547,9 +1553,9 @@ int remove_teid_from_db(str_holder* ip,str_holder* teid){
       if(!str_eq(*teid,ip_teid_db.db[idx].teid_list[i].teid_out)){
         free_str_holder(&ip_teid_db.db[idx].teid_list[i].teid_out);
         free_str_holder(&ip_teid_db.db[idx].teid_list[i].filter.remote_ip);
-        for(int j=0;j<local_ep_length;j++){
-          if(local_ep_db[j].fd==ip_teid_db.db[idx].teid_list[i].local_fd){
-            local_ep_db[j].usage_num--;
+        for(int j=0;j<local_ep_db.length;j++){
+          if(local_ep_db.db[j].fd==ip_teid_db.db[idx].teid_list[i].local_fd){
+            local_ep_db.db[j].usage_num--;
             close_local_ep(j);
           }
         }
