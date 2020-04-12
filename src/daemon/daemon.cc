@@ -30,6 +30,8 @@
 #include <netdb.h>
 #include <pthread.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/icmp6.h>
 #include <time.h>
 #include <signal.h>
 #include "GTP_mem_handler.h"
@@ -1335,7 +1337,7 @@ void *tun_to_udp(void *){
       int rem_port=-1;
       int loc_port=-1;
       //log("Captured proto = %i ", proto);
-      if(proto==17 || proto==6){
+      if(proto==IPPROTO_UDP || proto==IPPROTO_TCP){
         int start_offset=ipv6?40:(buffer[0]&0x0F)*4;
         loc_port=buffer[start_offset]*256+buffer[start_offset+1];
         rem_port=buffer[start_offset+2]*256+buffer[start_offset+3];
@@ -1441,7 +1443,7 @@ void *udp_to_tun(void* a){
           continue;
         }
         //    IPv6                 ICMPv6                      RA
-        if((buffer[8] & 0x20) && ( buffer[14] == 0x3A )  && ( buffer[48] == 0x86 )  &&  ip_req_db.num){
+        if((buffer[8] & 0x20) && ( buffer[14] == IPPROTO_ICMPV6 )  && ( buffer[48] == ND_ROUTER_ADVERT )  &&  ip_req_db.num){
              // there are outgoing IP request, ICMPv6 message received
           // check the teid in the database
           str_holder teid_in;
