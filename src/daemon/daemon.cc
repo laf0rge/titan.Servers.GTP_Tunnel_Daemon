@@ -60,7 +60,7 @@ pthread_rwlock_t   ip_teid_lock;
 // IP -> IP database index
 str_int_map ip_idx_map;
 
-// The IP database
+// The IP database: IP->TEID mapping (local IP, list of TEIDs)
 struct _ip_teid_db {
 	/* actual database */
 	ip_entry_t*	db;
@@ -76,10 +76,10 @@ static struct _ip_teid_db ip_teid_db;
 // map that holds the incoming teid - index map
 str_int_map teidin_idx_map;
 
-// read or write lock of it;
+// read or write lock of teidin_idx_map, ip_req_db
 pthread_rwlock_t   teid_idx_lock;
 
-// database of the pending IP prefix request
+// database of the pending IP prefix request (teid_in, teid_out, ip,fd, local_ep_fd, rem_addr)
 struct _ip_req_db {
 	/* actual database */
 	ip_req_db_t*	db;
@@ -94,7 +94,7 @@ static struct _ip_req_db ip_req_db;
 int tun_handler_num=0;
 pthread_t tun_handler;
 
-// local udp endpoint/port database
+// local udp endpoint/port database (UDP fd, usaged_by_num_of_teids, sockaddr_storage[key])
 struct _local_ep_db {
 	/* actual database */
 	local_ep_db_t*	db;
@@ -107,7 +107,7 @@ static struct _local_ep_db local_ep_db;
 
 // IP:port -> endpoint db idx map
 str_int_map ep_idx_map;
-// read or write lock of it;
+// read or write lock of it; -- UNUSED ?!?
 pthread_rwlock_t   ep_idx_lock;
 
 
