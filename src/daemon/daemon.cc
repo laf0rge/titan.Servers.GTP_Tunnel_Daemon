@@ -57,9 +57,6 @@ pthread_rwlock_t   ip_teid_lock;
 
 // ip teid maps
 
-// TEID -> IP database index
-//str_int_map teid_idx_map;
-
 // IP -> IP database index
 str_int_map ip_idx_map;
 
