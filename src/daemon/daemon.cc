@@ -41,7 +41,7 @@
 #define MAX_EVENTS_PER_THREAD 8
 
 char* tun_name=NULL;  // The interface name to use
-int pipefd[2]; // The internal pipe
+int pipefd[2]; // The internal pipe between main and UDP thread; used for router advertisements
 int address_set_mode=2;
 bool threads_started=false;
 
@@ -54,13 +54,7 @@ struct sockaddr_storage default_rem_addr;
 // GTP Tunnel fds
 int tun_fd=-1;  // TUN device
 
-// read or write lock of the ip teid maps (ip_idx_map + ip_teid_db)
-pthread_rwlock_t   ip_teid_lock;
-
 // ip teid maps
-
-// IP -> IP database index
-str_int_map ip_idx_map;
 
 // The IP database: IP->TEID mapping (local IP, list of TEIDs)
 struct _ip_teid_db {
@@ -72,6 +66,10 @@ struct _ip_teid_db {
 	int		entries;
 	/* last index we filled in; optimization to find unused entry */
 	int		last_idx;
+	// IP -> IDX database index
+	str_int_map 	idx_map;
+	// read or write lock of the ip teid maps (idx_map + teid_db)
+	pthread_rwlock_t lock;
 };
 static struct _ip_teid_db ip_teid_db;
 
@@ -362,12 +360,12 @@ static int process_msg_get_teid(msg_buffer* buffer, int msg_len, msg_buffer *res
         }
 
         str_int_map::const_iterator it;
-        pthread_rwlock_rdlock(&ip_teid_lock);
-        it=ip_idx_map.find(local_addr);
+        pthread_rwlock_rdlock(&ip_teid_db.lock);
+        it=ip_teid_db.idx_map.find(local_addr);
         int match_level=-1;
         int match_idx=-1;
         int idx=-1;
-        if(it!=ip_idx_map.end()){
+        if(it!=ip_teid_db.idx_map.end()){
           idx=it->second;
           // find the matching teid
 
@@ -479,11 +477,11 @@ static int process_msg_get_teid(msg_buffer* buffer, int msg_len, msg_buffer *res
             out_len+=put_int(response,ntohs(sin->sin6_port));
           }
 
-          pthread_rwlock_unlock(&ip_teid_lock); // the lock is not needed any more
+          pthread_rwlock_unlock(&ip_teid_db.lock); // the lock is not needed any more
 
         } else {
           log("tunnel data not found");
-          pthread_rwlock_unlock(&ip_teid_lock); // the lock is not needed any more
+          pthread_rwlock_unlock(&ip_teid_db.lock); // the lock is not needed any more
           out_len+=put_int(response,0);
         }
         response->pos=0;
@@ -851,8 +849,8 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
         if(ip_type==0 || ip.str_size==16){  // IPv4 or full IPv6 address received
 
           if(address_set_mode==2){// assign the IP to the interface
-            str_int_map::iterator it=ip_idx_map.find(ip);
-            if(it==ip_idx_map.end()) {
+            str_int_map::iterator it=ip_teid_db.idx_map.find(ip);
+            if(it==ip_teid_db.idx_map.end()) {
               set_addr(&ip);
             }
           }
@@ -1275,6 +1273,7 @@ int start_ctrl_listen(){
   return daemon_fd;
 }
 
+/* main function of thread(s) for TUN -> GTP/UDP direction */
 void *tun_to_udp(void *){
 //  The GTP header struct:
 //  octet 0:  Version, PT, reserved, flags: fixed values 0x30
@@ -1299,6 +1298,7 @@ void *tun_to_udp(void *){
   // init the fixed part of the GTP message
   base_buffer[0]=0x30;
   base_buffer[1]=0xFF; // message type
+
   while(1){
     nread = read(tun_fd_loc,buffer,MAX_UDP_PACKET);
     if(nread < 0) {
@@ -1320,15 +1320,17 @@ void *tun_to_udp(void *){
       ip.str_begin=buffer+12;
       ip.str_size=4;
     }
+
+    /* lookup the index based on the source IP address */
     str_int_map::const_iterator it;
-    pthread_rwlock_rdlock(&ip_teid_lock);
-    it=ip_idx_map.find(ip);
-    if(it==ip_idx_map.end()){
+    pthread_rwlock_rdlock(&ip_teid_db.lock);
+    it=ip_teid_db.idx_map.find(ip);
+    if(it==ip_teid_db.idx_map.end()){
       // NO ip  -> teid map, just drop the packet
-      pthread_rwlock_unlock(&ip_teid_lock);
+      pthread_rwlock_unlock(&ip_teid_db.lock);
       continue;
     }
-      //log("it!=ip_idx_map.end()");
+      //log("it!=ip_teid_db.idx_map.end()");
       const unsigned char* teid;
       int idx=it->second;
       // find the matching teid
@@ -1397,7 +1399,7 @@ void *tun_to_udp(void *){
 
       }
       if(match_idx==-1){
-        pthread_rwlock_unlock(&ip_teid_lock); // the lock is not needed any more
+        pthread_rwlock_unlock(&ip_teid_db.lock); // the lock is not needed any more
 	continue;
       }
         //log("Capture match_idx!=-1");
@@ -1406,7 +1408,7 @@ void *tun_to_udp(void *){
         base_buffer[5]=teid[1];
         base_buffer[6]=teid[2];
         base_buffer[7]=teid[3];
-        pthread_rwlock_unlock(&ip_teid_lock); // the lock is not needed any more
+        pthread_rwlock_unlock(&ip_teid_db.lock); // the lock is not needed any more
         // update msg_length
         base_buffer[3]=nread & 0xFF;
         base_buffer[2]=(nread>>8) & 0xFF;
@@ -1416,6 +1418,8 @@ void *tun_to_udp(void *){
         }
     }
 }
+
+/* main function of the GTP handler thread(s). Read from GTP/UDP + write to tun device */
 void *udp_to_tun(void* a){
 // for the magic number check the IPv6 RFCs
 // The IP packet starts at the 8 after the GTP-U header
@@ -1438,6 +1442,8 @@ void *udp_to_tun(void* a){
           log("We received %d instead of T-PDU",buffer[1]);
           continue;
         }
+
+	/* Special handling for ICMPv6 (prefix advertisement) */
         //    IPv6                 ICMPv6                      RA
         if((buffer[8] & 0x20) && ( buffer[14] == IPPROTO_ICMPV6 )  && ( buffer[48] == ND_ROUTER_ADVERT )  &&  ip_req_db.num){
              // there are outgoing IP request, ICMPv6 message received
@@ -1445,9 +1451,12 @@ void *udp_to_tun(void* a){
           str_holder teid_in;
           teid_in.str_begin=buffer+4;
           teid_in.str_size=4;
+
+	  /* obtain index by TEID */
           pthread_rwlock_rdlock(&teid_idx_lock);
           bool found= teidin_idx_map.find(teid_in)!=teidin_idx_map.end();
           pthread_rwlock_unlock(&teid_idx_lock);
+
           if(found){
             // This is the message we're looking for
 
@@ -1488,6 +1497,7 @@ void *udp_to_tun(void* a){
 
         }
 
+	/* Write message to tun device, excluding the 8 byte GTP header */
         int nread = write(tun_fd,buffer+8,n-8); // 8 : GTP header size
         //log("Writeing to interface %d, %d, %s",n-8,errno,strerror(errno));
         if(nread < 0) {
@@ -1501,11 +1511,11 @@ void *udp_to_tun(void* a){
   return 0;
 }
 int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_port, int rem_port, int proto, int  loc_fd,struct sockaddr_storage *rem_addr){
-  pthread_rwlock_wrlock(&ip_teid_lock);
+  pthread_rwlock_wrlock(&ip_teid_db.lock);
 
-  str_int_map::iterator it=ip_idx_map.find(*ip);
+  str_int_map::iterator it=ip_teid_db.idx_map.find(*ip);
   int idx=-1;
-  if(it==ip_idx_map.end()){
+  if(it==ip_teid_db.idx_map.end()){
     if(ip_teid_db.size==ip_teid_db.entries){
       /* enarge ip_teid_db */
       if(ip_teid_db.size==0){ip_teid_db.size+=256;}
@@ -1529,10 +1539,10 @@ int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_
         }
       }
     }
-    /* initialize ip_idx_map entry */
+    /* initialize ip_teid_db.idx_map entry */
     ip_teid_db.db[idx].teid_num=0;
     copy_str_holder(&ip_teid_db.db[idx].ip,ip);
-    ip_idx_map[ip_teid_db.db[idx].ip]=idx;
+    ip_teid_db.idx_map[ip_teid_db.db[idx].ip]=idx;
     ip_teid_db.entries++;
     ip_teid_db.last_idx=idx;
   } else {
@@ -1563,15 +1573,15 @@ int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_
   ip_teid_db.db[idx].teid_list[filter_idx].local_fd=loc_fd;
   memcpy(&ip_teid_db.db[idx].teid_list[filter_idx].rem_addr,rem_addr,sizeof(struct sockaddr_storage));
 
-  pthread_rwlock_unlock(&ip_teid_lock);
+  pthread_rwlock_unlock(&ip_teid_db.lock);
   return 0;
 }
 
 int remove_teid_from_db(str_holder* ip,str_holder* teid){
-  pthread_rwlock_wrlock(&ip_teid_lock);
+  pthread_rwlock_wrlock(&ip_teid_db.lock);
 
-  str_int_map::iterator it=ip_idx_map.find(*ip);
-  if(it!=ip_idx_map.end()){
+  str_int_map::iterator it=ip_teid_db.idx_map.find(*ip);
+  if(it!=ip_teid_db.idx_map.end()){
     int idx=it->second;
     int i=0;
     for(i=0;i<ip_teid_db.db[idx].teid_num;i++){
@@ -1596,7 +1606,7 @@ int remove_teid_from_db(str_holder* ip,str_holder* teid){
       }
     }
     if(ip_teid_db.db[idx].teid_num==0){  // the last teid was removed
-      ip_idx_map.erase(ip_teid_db.db[idx].ip);
+      ip_teid_db.idx_map.erase(ip_teid_db.db[idx].ip);
       del_addr(&ip_teid_db.db[idx].ip);
       Free(ip_teid_db.db[idx].teid_list);
       ip_teid_db.db[idx].teid_list=NULL;
@@ -1606,14 +1616,14 @@ int remove_teid_from_db(str_holder* ip,str_holder* teid){
     }
   }
 
-  pthread_rwlock_unlock(&ip_teid_lock);
+  pthread_rwlock_unlock(&ip_teid_db.lock);
   return 0;
 }
 
 int main(int argc, char **argv){
   signal(SIGPIPE, SIG_IGN);
   process_options(argc, argv);  // check the command line options
-  pthread_rwlock_init(&ip_teid_lock, NULL);
+  pthread_rwlock_init(&ip_teid_db.lock, NULL);
   pthread_rwlock_init(&teid_idx_lock, NULL);
   pthread_rwlock_init(&ep_idx_lock, NULL);
   log("Starting");
@@ -1691,7 +1701,7 @@ int main(int argc, char **argv){
       }
     }
 
-    // check the intrnal pipe
+    // check the intrnal pipe (router advertisement received from UDP/GTP side */
     if(fds[1].revents){
       fds[1].revents=0;
       int idx=0;
@@ -1699,8 +1709,8 @@ int main(int argc, char **argv){
       if(rd==sizeof(int)){
         // read was ok.
         if(address_set_mode==2){// assign the IP to the interface
-          str_int_map::iterator it=ip_idx_map.find(ip_req_db.db[idx].ip);
-          if(it==ip_idx_map.end()) {
+          str_int_map::iterator it=ip_teid_db.idx_map.find(ip_req_db.db[idx].ip);
+          if(it==ip_teid_db.idx_map.end()) {
             set_addr(&ip_req_db.db[idx].ip);
           }
         }
@@ -1712,7 +1722,7 @@ int main(int argc, char **argv){
 //              set_addr(&ip_req_db.db[idx].ip);
 //            }
 
-        // send back the ACK
+        // send back the CREATE ACK
         msg_buffer msg_buff;
         str_holder str;
         init_msg_buffer(&msg_buff);
