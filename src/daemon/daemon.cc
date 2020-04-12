@@ -63,7 +63,7 @@ struct _ip_teid_db {
 	/* size of the database (allocated size) */
 	int 		size;
 	/* number of entires in use */
-	int		entries;
+	int		num_entries;
 	/* last index we filled in; optimization to find unused entry */
 	int		last_idx;
 	// IP -> IDX database index
@@ -80,7 +80,7 @@ struct _ip_req_db {
 	/* size of the database (allocated size) */
 	int 		size;
 	/* number of entires in use */
-	int		num;
+	int		num_entries;
 	// map that holds the incoming teid - index map
 	str_int_map	teidin_idx_map;
 	// read or write lock of teidin_idx_map, ip_req_db
@@ -100,7 +100,7 @@ struct _local_ep_db {
 	/* size of the database (allocated size) */
 	int		size;
 	/* number of entires in use */
-	int		num;
+	int		num_entries;
 	// IP:port -> endpoint db idx map
 	str_int_map	idx_map;
 	// read or write lock of it; -- UNUSED ?!?
@@ -180,7 +180,7 @@ void close_local_ep(int idx, int force=0){
   if(local_ep_db.db[idx].usage_num == 0  && local_ep_db.db[idx].fd!=-1){
     close(local_ep_db.db[idx].fd);
     local_ep_db.db[idx].fd=-1;
-    local_ep_db.num--;
+    local_ep_db.num_entries--;
     local_ep_db.idx_map.erase(local_ep_db.db[idx].key);
     log("closed");
   } else {
@@ -548,7 +548,7 @@ static int process_msg_init(msg_buffer* buffer, int msg_len, msg_buffer *respons
           // init the local endpoint db
           // add the default entry
           local_ep_db.size=1;
-          local_ep_db.num=1;
+          local_ep_db.num_entries=1;
           local_ep_db.db = (local_ep_db_t *)Malloc(sizeof(local_ep_db_t));
           local_ep_db.db[0].fd=-1;
           local_ep_db.db[0].usage_num=0;
@@ -774,14 +774,14 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
                return 0;
             }
 
-            if(local_ep_db.size==local_ep_db.num){ //we need to extend the list
+            if(local_ep_db.size==local_ep_db.num_entries){ //we need to extend the list
 //                pthread_rwlock_wrlock(local_ep_db.lock);
               local_ep_db.size++;
               local_ep_db.db = (local_ep_db_t *)Realloc(local_ep_db.db,local_ep_db.size*sizeof(local_ep_db_t));
-              local_ep_db.db[local_ep_db.num].fd=-1;
-              local_ep_db.db[local_ep_db.num].usage_num=0;
-              local_ep_db.db[local_ep_db.num].key.str_begin=(const unsigned char*)Malloc(sizeof(struct sockaddr_storage));
-              local_ep_db.db[local_ep_db.num].key.str_size=sizeof(struct sockaddr_storage);
+              local_ep_db.db[local_ep_db.num_entries].fd=-1;
+              local_ep_db.db[local_ep_db.num_entries].usage_num=0;
+              local_ep_db.db[local_ep_db.num_entries].key.str_begin=(const unsigned char*)Malloc(sizeof(struct sockaddr_storage));
+              local_ep_db.db[local_ep_db.num_entries].key.str_size=sizeof(struct sockaddr_storage);
 //                pthread_rwlock_unlock(local_ep_db.lock);
             }
 
@@ -794,7 +794,7 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
             local_ep_db.db[i].usage_num++;
             memcpy((void *)local_ep_db.db[i].key.str_begin,&loc_addr,sizeof(struct sockaddr_storage));
             local_ep_db.idx_map[local_ep_db.db[i].key]=i;
-            local_ep_db.num++;
+            local_ep_db.num_entries++;
             loc_fd=local_ep_db.db[i].fd;
 
             // add fd to the epoll list
@@ -807,12 +807,12 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
             }
 
 
-            if(local_ep_db.num>=(tun_handler_num*gtp_per_thread)){ // create threads if needed
+            if(local_ep_db.num_entries>=(tun_handler_num*gtp_per_thread)){ // create threads if needed
               pthread_t gtp_handler;
 
               if ( pthread_create(&gtp_handler, NULL,udp_to_tun , &local_ep_db.db[i].fd) )
               {
-                 printf("Can't start thread (gtp_handler_%i)", local_ep_db.num-1);
+                 printf("Can't start thread (gtp_handler_%i)", local_ep_db.num_entries-1);
                  exit(1);
               }
 
@@ -889,14 +889,14 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
           copy_str_holder(&teid_in,&str);
 
           // Put the data into the db
-          if(ip_req_db.size==ip_req_db.num){
+          if(ip_req_db.size==ip_req_db.num_entries){
             // increase the db
             pthread_rwlock_wrlock(&ip_req_db.lock);
             ip_req_db.size+=10;
             ip_req_db.db=(ip_req_db_t*)Realloc(ip_req_db.db,ip_req_db.size*sizeof(ip_req_db_t));
             pthread_rwlock_unlock(&ip_req_db.lock); // The new slots won't be accessed from other thread
 
-            for(int i=ip_req_db.num;i<ip_req_db.size;i++){
+            for(int i=ip_req_db.num_entries;i<ip_req_db.size;i++){
               ip_req_db.db[i].teid_in.str_size=-1;
             }
           }
@@ -915,7 +915,7 @@ static int process_msg_create(int fd, msg_buffer* buffer, int msg_len, msg_buffe
 
           ip_req_db.db[idx].local_ep_fd=loc_fd;
           memcpy(&ip_req_db.db[idx].rem_addr,rem_addr_ptr,sizeof(struct sockaddr_storage));
-          ip_req_db.num++; // no problem if the thread reads the old value
+          ip_req_db.num_entries++; // no problem if the thread reads the old value
 
           pthread_rwlock_wrlock(&ip_req_db.lock);
           ip_req_db.teidin_idx_map[teid_in]=idx;
@@ -1443,7 +1443,7 @@ void *udp_to_tun(void* a){
 
 	/* Special handling for ICMPv6 (prefix advertisement) */
         //    IPv6                 ICMPv6                      RA
-        if((buffer[8] & 0x20) && ( buffer[14] == IPPROTO_ICMPV6 )  && ( buffer[48] == ND_ROUTER_ADVERT )  &&  ip_req_db.num){
+        if((buffer[8] & 0x20) && ( buffer[14] == IPPROTO_ICMPV6 )  && ( buffer[48] == ND_ROUTER_ADVERT )  &&  ip_req_db.num_entries){
              // there are outgoing IP request, ICMPv6 message received
           // check the teid in the database
           str_holder teid_in;
@@ -1514,12 +1514,12 @@ int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_
   str_int_map::iterator it=ip_teid_db.idx_map.find(*ip);
   int idx=-1;
   if(it==ip_teid_db.idx_map.end()){
-    if(ip_teid_db.size==ip_teid_db.entries){
+    if(ip_teid_db.size==ip_teid_db.num_entries){
       /* enarge ip_teid_db */
       if(ip_teid_db.size==0){ip_teid_db.size+=256;}
       ip_teid_db.size*=2;
       ip_teid_db.db=(ip_entry_t*)Realloc(ip_teid_db.db,ip_teid_db.size*sizeof(ip_entry_t));
-      for(int i=ip_teid_db.entries;i<ip_teid_db.size;i++){
+      for(int i=ip_teid_db.num_entries;i<ip_teid_db.size;i++){
         ip_teid_db.db[i].teid_num=-1;
         ip_teid_db.db[i].teid_list=NULL;
       }
@@ -1541,7 +1541,7 @@ int add_teid_to_db(str_holder* ip, str_holder* teid, str_holder* rem_ip,int loc_
     ip_teid_db.db[idx].teid_num=0;
     copy_str_holder(&ip_teid_db.db[idx].ip,ip);
     ip_teid_db.idx_map[ip_teid_db.db[idx].ip]=idx;
-    ip_teid_db.entries++;
+    ip_teid_db.num_entries++;
     ip_teid_db.last_idx=idx;
   } else {
     idx=it->second;
@@ -1610,7 +1610,7 @@ int remove_teid_from_db(str_holder* ip,str_holder* teid){
       ip_teid_db.db[idx].teid_list=NULL;
       ip_teid_db.db[idx].teid_num=-1;
       free_str_holder(&ip_teid_db.db[idx].ip);
-      ip_teid_db.entries--;
+      ip_teid_db.num_entries--;
     }
   }
 
